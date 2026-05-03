@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "noisemodel"
+version = "0.1.0"
+description = "A minimal example of a pip-installable package."
+authors = [
+    { name = "Carlos", email = "your.email@example.com" }
+]
+requires-python = ">=3.10"
+
+# Explicitly telling it where the code is
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["noisemodel"]
