@@ -18,7 +18,7 @@ from .log import setup_logging, CSVLogger
 
 log = logging.getLogger(__name__)
 
-def train(cfg: dict):
+def train(cfg: dict, only_cache: False):
     # ---- Setup ----------------------------------------------------------------
     torch.manual_seed(cfg["seed"])
     np.random.seed(cfg["seed"])
@@ -64,6 +64,9 @@ def train(cfg: dict):
         shuffle     = False,
         **shared_loader_kwargs,
     )
+    if only_cache:
+        log.info(f"Only cache requested, we are done")
+        return False
 
     log.info(f"Train observations : {len(train_loader.dataset)}")
     log.info(f"Val   observations : {len(val_loader.dataset)}")

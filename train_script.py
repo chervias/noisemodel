@@ -48,6 +48,8 @@ def parse_args():
     p.add_argument("--seed",        type=int,      help="Override random seed")
     p.add_argument("--print-config", action="store_true",
                    help="Print resolved config and exit")
+    p.add_argument("--only-cache", action="store_true",
+                   help="Only run the cacheing for datasets")
     return p.parse_args()
 
 
@@ -90,4 +92,7 @@ if __name__ == "__main__":
         print(f"ERROR: missing required config fields: {missing}")
         sys.exit(1)
 
-    noisemodel.train(cfg)
+    if args.only_cache:
+        noisemodel.train(cfg, only_cache=True)
+    else:
+        noisemodel.train(cfg)
