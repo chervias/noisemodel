@@ -18,7 +18,58 @@ from .log import setup_logging, CSVLogger
 
 log = logging.getLogger(__name__)
 
-def train(cfg: dict, only_cache: False):
+# ---------------------------------------------------------------------------
+# Checkpoint helpers
+# ---------------------------------------------------------------------------
+
+def save_checkpoint(
+    path: Path,
+    model: CMBNoiseAutoencoder,
+    optimizer: torch.optim.Optimizer,
+    scheduler,
+    epoch: int,
+    global_step: int,
+    best_val_loss: float,
+    cfg: dict,
+):
+    torch.save(
+        {
+            "epoch":          epoch,
+            "global_step":    global_step,
+            "best_val_loss":  best_val_loss,
+            "model_state":    model.state_dict(),
+            "optimizer_state": optimizer.state_dict(),
+            "scheduler_state": scheduler.state_dict() if scheduler else None,
+            "config":         cfg,
+        },
+        path,
+    )
+
+
+def load_checkpoint(
+    path: Path,
+    model: CMBNoiseAutoencoder,
+    optimizer: Optional[torch.optim.Optimizer] = None,
+    scheduler=None,
+) -> dict:
+    ckpt = torch.load(path, map_location="cpu")
+    model.load_state_dict(ckpt["model_state"])
+    if optimizer and "optimizer_state" in ckpt:
+        optimizer.load_state_dict(ckpt["optimizer_state"])
+    if scheduler and ckpt.get("scheduler_state"):
+        scheduler.load_state_dict(ckpt["scheduler_state"])
+    return ckpt
+
+
+def rotate_checkpoints(ckpt_dir: Path, prefix: str, keep: int):
+    """Delete oldest epoch checkpoints, keeping only the last `keep`."""
+    ckpts = sorted(ckpt_dir.glob(f"{prefix}_*.pt"),
+                   key=lambda p: int(p.stem.split("_")[-1]))
+    for old in ckpts[:-keep]:
+        old.unlink()
+        log.info(f"Deleted old checkpoint: {old.name}")
+
+def train(cfg: dict, only_cache: bool = False):
     # ---- Setup ----------------------------------------------------------------
     torch.manual_seed(cfg["seed"])
     np.random.seed(cfg["seed"])
@@ -338,54 +389,3 @@ def evaluate(
 
     model.train()
     return total_loss / max(n_batches, 1)
-
-# ---------------------------------------------------------------------------
-# Checkpoint helpers
-# ---------------------------------------------------------------------------
-
-def save_checkpoint(
-    path: Path,
-    model: CMBNoiseAutoencoder,
-    optimizer: torch.optim.Optimizer,
-    scheduler,
-    epoch: int,
-    global_step: int,
-    best_val_loss: float,
-    cfg: dict,
-):
-    torch.save(
-        {
-            "epoch":          epoch,
-            "global_step":    global_step,
-            "best_val_loss":  best_val_loss,
-            "model_state":    model.state_dict(),
-            "optimizer_state": optimizer.state_dict(),
-            "scheduler_state": scheduler.state_dict() if scheduler else None,
-            "config":         cfg,
-        },
-        path,
-    )
-
-
-def load_checkpoint(
-    path: Path,
-    model: CMBNoiseAutoencoder,
-    optimizer: Optional[torch.optim.Optimizer] = None,
-    scheduler=None,
-) -> dict:
-    ckpt = torch.load(path, map_location="cpu")
-    model.load_state_dict(ckpt["model_state"])
-    if optimizer and "optimizer_state" in ckpt:
-        optimizer.load_state_dict(ckpt["optimizer_state"])
-    if scheduler and ckpt.get("scheduler_state"):
-        scheduler.load_state_dict(ckpt["scheduler_state"])
-    return ckpt
-
-
-def rotate_checkpoints(ckpt_dir: Path, prefix: str, keep: int):
-    """Delete oldest epoch checkpoints, keeping only the last `keep`."""
-    ckpts = sorted(ckpt_dir.glob(f"{prefix}_*.pt"),
-                   key=lambda p: int(p.stem.split("_")[-1]))
-    for old in ckpts[:-keep]:
-        old.unlink()
-        log.info(f"Deleted old checkpoint: {old.name}")
