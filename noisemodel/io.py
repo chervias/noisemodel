@@ -34,6 +34,7 @@ import argparse
 import yaml
 from pathlib import Path
 from typing import Optional
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import numpy as np
 import torch
@@ -84,6 +85,38 @@ def _save_to_cache(path: Path, tod: np.ndarray, focal_plane: np.ndarray,
              srate=np.float32(srate))
     tmp_npz.rename(path)                                  # hash.tmp.npz → hash.npz
 
+def _preprocess_and_cache_one(sub_id, cache_dir, context_path, preproc_path, window, downsample=None):
+    """Module-level so it can be pickled by ProcessPoolExecutor."""
+    context = core.Context(context_path)
+    preproc = _get_config(preproc_path)
+
+    meta = context.get_meta(sub_id)
+    obs, _ = pp_util.load_and_preprocess(sub_id, preproc, context=context, meta=meta)
+
+    # Steps that mirror the mapmaker
+    obs.restrict('dets', obs.dets.vals[obs.det_info.wafer.type == 'OPTC'])
+    mapmaking.fix_boresight_glitches(obs)
+    putils.deslope(obs.signal, w=5, inplace=True)
+    obs.signal = obs.signal.astype(np.float32)
+    putils.deslope(obs.signal, w=5, inplace=True)
+    # here we downsample
+    if downsample is not None:
+        obs = mapmaking.downsample_obs(obs, downsample)
+    srate = (obs.samps.count - 1) / (obs.timestamps[-1] - obs.timestamps[0])
+    putils.deslope(obs.signal, w=5, inplace=True)
+    tod = obs.signal.astype(np.float32)          # [ndet, nsamp]
+
+    # Apply window → FFT → unapply window (matches mapmaker convention)
+    nwin = putils.nint(window * srate)
+    mapmaking.apply_window(tod, nwin)
+    fft.rfft(tod)                                # side-effect on tod buffer
+    mapmaking.apply_window(tod, nwin, -1)
+
+    fp = np.array(
+        [obs.focal_plane.xi, obs.focal_plane.eta],
+        dtype=np.float32,
+    ).T                                          # [ndet, 2]
+    _save_to_cache(_cache_path(Path(cache_dir), sub_id), tod, fp, srate)
 
 # ---------------------------------------------------------------------------
 # Dataset
@@ -126,9 +159,6 @@ class LATDataset(Dataset):
         If set, randomly crop each TOD to this many samples per __getitem__
         call.  Acts as time-axis data augmentation.  If None the full TOD is
         returned (variable length — collate_fn pads).
-    min_chunk_size : int
-        Observations shorter than this (after preprocessing) are used at
-        their full length with a warning rather than being dropped.
     normalize_tod : bool
         Normalise each detector's TOD chunk to unit variance.  Applied after
         cropping so the scale is consistent with the chunk used.
@@ -147,25 +177,27 @@ class LATDataset(Dataset):
         preprocess: str,
         band: Optional[str] = 'f090',
         downsample: Optional[int] = None,
-        cache_dir: str = 'cache',
-        preload: bool = False,
+        num_cache_workers: Optional[int] = 1,
+        cache_dir: Optional[str] = 'cache',
+        preload: Optional[bool] = False,
         chunk_size: Optional[int] = 360_000,    # 30 min @ 200 Hz
-        min_chunk_size: int = 120_000,
         normalize_tod: bool = True,
         normalize_focal_plane: bool = True,
         window: float = 2.0,
     ):
-        self.context   = core.Context(context)
-        self.preproc   = _get_config(preprocess)
-        self.band      = band
-        self.cache_dir = Path(cache_dir)
-        self.preload   = preload
+        self.context      = core.Context(context)
+        self.context_path = context
+        self.preproc      = _get_config(preprocess)
+        self.preproc_path = preprocess
+        self.band         = band
+        self.cache_dir    = Path(cache_dir)
+        self.preload      = preload
         self.chunk_size     = chunk_size
-        self.min_chunk_size = min_chunk_size
         self.normalize_tod          = normalize_tod
         self.normalize_focal_plane  = normalize_focal_plane
         self.window = window
         self.downsample = downsample
+        self.num_cache_workers = num_cache_workers
 
         # Resolve observation list
         self.sub_ids = mapmaking.get_subids(list_of_obs, context=self.context)
@@ -274,17 +306,23 @@ class LATDataset(Dataset):
             return
 
         log.info(f"Disk cache: preprocessing {len(missing)} observations "
-                 f"(already cached: {len(self.sub_ids) - len(missing)})...")
+                 f"using {self.num_cache_workers} workers...")
 
-        for i, sub_id in enumerate(missing):
-            path = _cache_path(self.cache_dir, sub_id)
-            try:
-                tod, fp, srate = self._preprocess_obs(sub_id)
-                _save_to_cache(path, tod, fp, srate)
-                log.info(f"  [{i+1}/{len(missing)}] cached {sub_id} "
-                         f"→ {path.name}  shape={tod.shape}")
-            except Exception as e:
-                warnings.warn(f"Failed to preprocess {sub_id}: {e}. Skipping.")
+        with ProcessPoolExecutor(max_workers=self.num_cache_workers) as pool:
+            futures = {
+                pool.submit(_preprocess_and_cache_one,
+                            sub_id, self.cache_dir,
+                            self.context_path, self.preproc_path,
+                            self.window, downsample=self.downsample): sub_id
+                for sub_id in missing
+            }
+            for i, future in enumerate(as_completed(futures)):
+                sub_id = futures[future]
+                try:
+                    future.result()
+                    log.info(f"  [{i+1}/{len(missing)}] cached {sub_id}")
+                except Exception as e:
+                    warnings.warn(f"Failed to preprocess {sub_id}: {e}. Skipping.")
 
     # ------------------------------------------------------------------
     # In-memory preload
@@ -344,13 +382,7 @@ class LATDataset(Dataset):
 
         # --- Random crop (time-axis data augmentation) --------------------
         if self.chunk_size is not None:
-            if nsamp < self.min_chunk_size:
-                warnings.warn(
-                    f"Obs {self.sub_ids[idx]}: nsamp={nsamp} < "
-                    f"min_chunk_size={self.min_chunk_size}. Using full TOD."
-                )
-                chunk = tod
-            elif nsamp <= self.chunk_size:
+            if nsamp <= self.chunk_size:
                 chunk = tod
             else:
                 t0    = np.random.randint(0, nsamp - self.chunk_size)
@@ -431,6 +463,8 @@ def make_dataloader(
     context: str,
     preprocess: str,
     band: Optional[str] = 'f090',
+    downsample: Optional[int] = None,
+    num_cache_workers: Optional[int] = 1,
     cache_dir: str = 'cache',
     preload: bool = False,
     batch_size: int = 4,
@@ -483,6 +517,8 @@ def make_dataloader(
         context               = context,
         preprocess            = preprocess,
         band                  = band,
+        downsample            = downsample,
+        num_cache_workers     = num_cache_workers,
         cache_dir             = cache_dir,
         preload               = preload,
         chunk_size            = chunk_size,
@@ -547,7 +583,6 @@ def make_default_config() -> dict:
         "preprocess":        "",          # required
         "band":              "f090",
         "chunk_size":        360_000,     # 30 min at 200 Hz
-        "min_chunk_size":    120_000,
         "normalize_tod":     True,
         "normalize_focal_plane": True,
         "num_workers":       4,
