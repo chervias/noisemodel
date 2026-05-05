@@ -112,6 +112,14 @@ def _preprocess_and_cache_one(sub_id, cache_dir, context_path, preproc_path, win
     fft.rfft(tod)                                # side-effect on tod buffer
     mapmaking.apply_window(tod, nwin, -1)
 
+    # Check if we have less than 50 detectors
+    if tod.shape[0] < 50:
+        raise ValueError("Less than 50 detectors left")
+
+    # Check for nans in the TOD, if so we skip this sub_id
+    if np.isnan(tod).any():
+        raise ValueError("NaNs detected in TOD")
+
     fp = np.array(
         [obs.focal_plane.xi, obs.focal_plane.eta],
         dtype=np.float32,
@@ -322,7 +330,7 @@ class LATDataset(Dataset):
                     future.result()
                     log.info(f"  [{i+1}/{len(missing)}] cached {sub_id}")
                 except Exception as e:
-                    warnings.warn(f"Failed to preprocess {sub_id}: {e}. Skipping.")
+                    log.warning(f"Failed to preprocess {sub_id}: {e}. Skipping.")
 
     # ------------------------------------------------------------------
     # In-memory preload
