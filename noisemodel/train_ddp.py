@@ -64,8 +64,12 @@ def setup_ddp():
     dist.init_process_group(backend="nccl")
     local_rank = int(os.environ["LOCAL_RANK"])
     torch.cuda.set_device(local_rank)
+    # Add device_id to silence the warnings
+    dist.init_process_group(
+        backend="nccl",
+        device_id=torch.device(f"cuda:{local_rank}"),  # ← add this
+    )
     return local_rank, dist.get_rank(), dist.get_world_size()
-
 
 def cleanup_ddp():
     dist.destroy_process_group()
@@ -315,7 +319,7 @@ def train(cfg: dict, only_cache: bool = False):
                 pg["lr"] = effective_lr * scale
 
     # ---- AMP scaler ----------------------------------------------------------
-    scaler = torch.cuda.amp.GradScaler(enabled=cfg["amp"])
+    scaler = torch.amp.GradScaler("cuda", enabled=cfg["amp"])
 
     # ---- Resume --------------------------------------------------------------
     best_val_loss = math.inf
@@ -416,7 +420,12 @@ def train(cfg: dict, only_cache: bool = False):
         mean_train = epoch_loss / max(epoch_steps, 1)
 
         if is_main(rank):
-            val_loss = evaluate(model, val_loader, device, cfg["amp"])
+            full_val_every = cfg.get("full_val_every_n_epochs", 10)
+            if (epoch + 1) % full_val_every == 0:
+                val_loss = evaluate(model, val_loader, device, cfg["amp"])  # uncapped
+            else:
+                val_loss = evaluate(model, val_loader, device, cfg["amp"],
+                        max_batches=cfg.get("val_max_batches", 30))
             model.train()
 
             log.info(
