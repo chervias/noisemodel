@@ -3,12 +3,13 @@ list_of_obs_val: list_i1_valid.txt
 context: use_this_local.yaml
 preprocess: lat_cfg_mf.yaml
 band: f090
-chunk_size: 360000
-min_chunk_size: 120000
+downsample: 8
+chunk_size: 30_000 # notice these depend on the downsampling factor
 preload: true
 normalize_tod: true
 normalize_focal_plane: true
-num_workers: 4
+num_workers: 4 # this is per mpi task
+num_cache_workers: 32
 prefetch_factor: 2
 nbin: 55
 nmode: 20
@@ -25,14 +26,16 @@ weight_decay: 1.0e-05
 grad_clip: 1.0
 schedule: cosine
 lr_min: 1.0e-06
-warmup_epochs: 2
+warmup_epochs: 4
 batch_size: 4
 n_epochs: 50
+val_max_batches: 30
+full_val_every_n_epochs: 15
 val_every_n_steps: 200
 log_every_n_steps: 20
-output_dir: output/first_test
+output_dir: output/test_gpu_114obstrain
 checkpoint_every_n_epochs: 5
 keep_last_n_checkpoints: 3
-seed: 42
+seed: 66
 amp: true
 pin_memory: true
