@@ -5,14 +5,14 @@ preprocess: lat_cfg_mf.yaml
 band: f090
 downsample: 8
 chunk_size: 30_000 # notice these depend on the downsampling factor
-preload: true
+preload: false
 normalize_tod: true
 normalize_focal_plane: true
 num_workers: 4 # this is per mpi task
 num_cache_workers: 32
 prefetch_factor: 2
-nbin: 45
-nmode: 20
+nbin: 40
+nmode: 12
 fmin: 0.16
 fmax: null
 d_model: 128
