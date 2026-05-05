@@ -11,7 +11,7 @@ normalize_focal_plane: true
 num_workers: 4 # this is per mpi task
 num_cache_workers: 32
 prefetch_factor: 2
-nbin: 55
+nbin: 45
 nmode: 20
 fmin: 0.16
 fmax: null

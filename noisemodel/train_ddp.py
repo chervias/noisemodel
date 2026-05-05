@@ -61,7 +61,6 @@ def setup_ddp():
     LOCAL_RANK, RANK, WORLD_SIZE, MASTER_ADDR, MASTER_PORT.
     Returns (local_rank, rank, world_size).
     """
-    dist.init_process_group(backend="nccl")
     local_rank = int(os.environ["LOCAL_RANK"])
     torch.cuda.set_device(local_rank)
     # Add device_id to silence the warnings
