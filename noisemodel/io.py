@@ -111,6 +111,8 @@ class LATDataset(Dataset):
         Path to the preprocessing config.
     band : str
         Frequency band filter (e.g. 'f090').
+    downsample : int
+        Downsample by this factor.
     cache_dir : str or Path
         Directory where preprocessed .npz files are stored.  Created
         automatically if it does not exist.  Multiple datasets (train / val /
@@ -144,6 +146,7 @@ class LATDataset(Dataset):
         context: str,
         preprocess: str,
         band: Optional[str] = 'f090',
+        downsample: Optional[int] = None,
         cache_dir: str = 'cache',
         preload: bool = False,
         chunk_size: Optional[int] = 360_000,    # 30 min @ 200 Hz
@@ -162,6 +165,7 @@ class LATDataset(Dataset):
         self.normalize_tod          = normalize_tod
         self.normalize_focal_plane  = normalize_focal_plane
         self.window = window
+        self.downsample = downsample
 
         # Resolve observation list
         self.sub_ids = mapmaking.get_subids(list_of_obs, context=self.context)
@@ -236,9 +240,11 @@ class LATDataset(Dataset):
         putils.deslope(obs.signal, w=5, inplace=True)
         obs.signal = obs.signal.astype(np.float32)
         putils.deslope(obs.signal, w=5, inplace=True)
+        # here we downsample
+        if self.downsample is not None:
+            obs = mapmaking.downsample_obs(obs, self.downsample)
         srate = (obs.samps.count - 1) / (obs.timestamps[-1] - obs.timestamps[0])
         putils.deslope(obs.signal, w=5, inplace=True)
-
         tod = obs.signal.astype(np.float32)          # [ndet, nsamp]
 
         # Apply window → FFT → unapply window (matches mapmaker convention)
