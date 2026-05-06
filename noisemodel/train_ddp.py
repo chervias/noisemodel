@@ -278,7 +278,7 @@ def train(cfg: dict, only_cache: bool = False):
     # ---- Optimiser -----------------------------------------------------------
     # Linear LR scaling: effective batch = batch_size * world_size,
     # so scale LR proportionally.
-    effective_lr = cfg["lr"] * world_size
+    effective_lr = cfg["lr"]
     optimizer = AdamW(
         model.parameters(),
         lr           = effective_lr,
@@ -333,6 +333,9 @@ def train(cfg: dict, only_cache: bool = False):
         start_epoch   = ckpt["epoch"] + 1
         global_step   = ckpt["global_step"]
         best_val_loss = ckpt["best_val_loss"]
+        # Reset LR to current effective_lr in case config changed since checkpoint
+        for pg in optimizer.param_groups:
+            pg["lr"] = effective_lr
         if is_main(rank):
             log.info(f"  Resumed at epoch {start_epoch}, step {global_step}, "
                      f"best_val_loss={best_val_loss:.4f}")
@@ -366,6 +369,10 @@ def train(cfg: dict, only_cache: bool = False):
             with torch.autocast(device.type, enabled=cfg["amp"]):
                 out  = model(tod, focal_plane, det_mask, srate)
                 loss = model.module.loss(out, det_mask)
+                if not torch.isfinite(loss):
+                    log.warning(f"  Non-finite loss={loss.item()} at step {global_step}, skipping batch")
+                    optimizer.zero_grad()
+                    continue
 
             scaler.scale(loss).backward()
 

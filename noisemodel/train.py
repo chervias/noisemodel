@@ -196,6 +196,9 @@ def train(cfg: dict, only_cache: bool = False):
         start_epoch   = ckpt["epoch"] + 1
         global_step   = ckpt["global_step"]
         best_val_loss = ckpt["best_val_loss"]
+        # Reset LR to current effective_lr in case config changed since checkpoint
+        for pg in optimizer.param_groups:
+            pg["lr"] = effective_lr
         log.info(f"  Resumed at epoch {start_epoch}, step {global_step}, "
                  f"best_val_loss={best_val_loss:.4f}")
 

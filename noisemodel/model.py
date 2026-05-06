@@ -278,7 +278,7 @@ def woodbury_nll_loss(
     vecs: torch.Tensor,    # [B, ndet, nmode]
     E: torch.Tensor,       # [B, nbin, nmode]  positive
     det_mask: torch.Tensor,# [B, ndet]  True = real
-    eps: float = 1e-10,
+    eps: float = 1e-6,
 ) -> torch.Tensor:
     """
     Compute the mean Gaussian negative log-likelihood per frequency bin,
@@ -329,7 +329,10 @@ def woodbury_nll_loss(
         # V_b = vecs * sqrt(E_b): [B, ndet, nmode]
         V_b    = vecs * E_b.unsqueeze(1).sqrt()   # [B, ndet, nmode]
 
-        iD_b   = 1.0 / (D_b + eps)  # [B, ndet]
+        D_b_clamped = D_b.clamp(min=1e-3)
+
+        #iD_b   = 1.0 / (D_b + eps)  # [B, ndet]
+        iD_b = 1.0 / D_b_clamped
         iD_V   = iD_b.unsqueeze(-1) * V_b  # [B, ndet, nmode]  = diag(1/D) V
 
         # M = I + V^T diag(1/D) V  [B, nmode, nmode]
@@ -338,7 +341,8 @@ def woodbury_nll_loss(
 
         # ------ log-det term ------
         # sum_d log D_b[d]  (only real detectors)
-        log_D_sum = (D_b + eps).log() * det_mask.float()  # [B, ndet]
+        log_D_sum = D_b_clamped.log() * det_mask.float()
+#        log_D_sum = (D_b + eps).log() * det_mask.float()  # [B, ndet]
         log_D_sum = log_D_sum.sum(dim=-1)                  # [B]
 
         # log det(M) via Cholesky for numerical stability
