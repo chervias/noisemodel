@@ -189,6 +189,7 @@ class LATDataset(Dataset):
         cache_dir: Optional[str] = 'cache',
         preload: Optional[bool] = False,
         chunk_size: Optional[int] = 360_000,    # 30 min @ 200 Hz
+        random_crop: Optional[bool] = True,
         normalize_tod: bool = True,
         normalize_focal_plane: bool = True,
         window: float = 2.0,
@@ -201,6 +202,7 @@ class LATDataset(Dataset):
         self.cache_dir    = Path(cache_dir)
         self.preload      = preload
         self.chunk_size     = chunk_size
+        self.random_crop  = random_crop
         self.normalize_tod          = normalize_tod
         self.normalize_focal_plane  = normalize_focal_plane
         self.window = window
@@ -393,7 +395,11 @@ class LATDataset(Dataset):
             if nsamp <= self.chunk_size:
                 chunk = tod
             else:
-                t0    = np.random.randint(0, nsamp - self.chunk_size)
+                if self.random_crop:
+                    t0    = np.random.randint(0, nsamp - self.chunk_size)
+                else:
+                    # Deterministic center crop for validation
+                    t0 = (nsamp - self.chunk_size) // 2
                 chunk = tod[:, t0 : t0 + self.chunk_size]
         else:
             chunk = tod
@@ -477,6 +483,7 @@ def make_dataloader(
     preload: bool = False,
     batch_size: int = 4,
     chunk_size: Optional[int] = 360_000,
+    random_crop: Optional[bool] = True,
     normalize_tod: bool = True,
     normalize_focal_plane: bool = True,
     shuffle: bool = True,
@@ -530,6 +537,7 @@ def make_dataloader(
         cache_dir             = cache_dir,
         preload               = preload,
         chunk_size            = chunk_size,
+        random_crop           = random_crop,
         normalize_tod         = normalize_tod,
         normalize_focal_plane = normalize_focal_plane,
     )

@@ -73,6 +73,12 @@ from .utils import *
 # Encoder
 # ---------------------------------------------------------------------------
 
+def fourier_encode(x, num_bands=4):
+    x = x.unsqueeze(-1)
+    scales = 2.0 ** torch.arange(num_bands, device=x.device, dtype=x.dtype)
+    x = x * scales * math.pi
+    return torch.cat([x.sin(), x.cos()], dim=-1).flatten(-2)
+
 class DetectorTransformerEncoder(nn.Module):
     """
     Transformer encoder that operates over the *detector* axis.
@@ -112,7 +118,8 @@ class DetectorTransformerEncoder(nn.Module):
     ):
         super().__init__()
         # Per-detector input: log-PSD (nbin) + focal-plane xy (2)
-        self.input_proj = nn.Linear(nbin + 2, d_model)
+        # we are encoding the focal plane into 16 now
+        self.input_proj = nn.Linear(nbin + 16, d_model)
  
         # Stack of standard TransformerEncoder layers
         encoder_layer = nn.TransformerEncoderLayer(
@@ -144,7 +151,8 @@ class DetectorTransformerEncoder(nn.Module):
         h       : [B, ndet, d_model] — per-detector hidden states (for decoder)
         """
         # Build per-detector token embeddings
-        x = torch.cat([log_psd, focal_plane], dim=-1)   # [B, ndet, nbin+2]
+        fp_encoded = fourier_encode(focal_plane, num_bands=4) # turns 2 coords into 16 features
+        x = torch.cat([log_psd, fp_encoded], dim=-1) # [B, ndet, nbin+2]
         x = self.input_proj(x)                           # [B, ndet, d_model]
  
         # TransformerEncoder uses src_key_padding_mask where True = *ignore*

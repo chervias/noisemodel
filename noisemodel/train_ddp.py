@@ -247,6 +247,7 @@ def train(cfg: dict, only_cache: bool = False):
             num_workers     = cfg["num_workers"],
             pin_memory      = True,
             prefetch_factor = cfg["prefetch_factor"],
+            random_crop     = False,
             **_dataset_kwargs,
         )
         log.info(f"Train observations : {len(train_dataset)} "
