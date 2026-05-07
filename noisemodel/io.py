@@ -103,14 +103,7 @@ def _preprocess_and_cache_one(sub_id, cache_dir, context_path, preproc_path, win
     if downsample is not None:
         obs = mapmaking.downsample_obs(obs, downsample)
     srate = (obs.samps.count - 1) / (obs.timestamps[-1] - obs.timestamps[0])
-    putils.deslope(obs.signal, w=5, inplace=True)
     tod = obs.signal.astype(np.float32)          # [ndet, nsamp]
-
-    # Apply window → FFT → unapply window (matches mapmaker convention)
-    nwin = putils.nint(window * srate)
-    mapmaking.apply_window(tod, nwin)
-    fft.rfft(tod)                                # side-effect on tod buffer
-    mapmaking.apply_window(tod, nwin, -1)
 
     # Check if we have less than 50 detectors
     if tod.shape[0] < 50:
@@ -286,14 +279,15 @@ class LATDataset(Dataset):
         if self.downsample is not None:
             obs = mapmaking.downsample_obs(obs, self.downsample)
         srate = (obs.samps.count - 1) / (obs.timestamps[-1] - obs.timestamps[0])
-        putils.deslope(obs.signal, w=5, inplace=True)
         tod = obs.signal.astype(np.float32)          # [ndet, nsamp]
 
-        # Apply window → FFT → unapply window (matches mapmaker convention)
-        nwin = putils.nint(self.window * srate)
-        mapmaking.apply_window(tod, nwin)
-        fft.rfft(tod)                                # side-effect on tod buffer
-        mapmaking.apply_window(tod, nwin, -1)
+        # Check if we have less than 50 detectors
+        if tod.shape[0] < 50:
+            raise ValueError("Less than 50 detectors left")
+
+        # Check for nans in the TOD, if so we skip this sub_id
+        if np.isnan(tod).any():
+            raise ValueError("NaNs detected in TOD")
 
         fp = np.array(
             [obs.focal_plane.xi, obs.focal_plane.eta],
@@ -384,11 +378,26 @@ class LATDataset(Dataset):
         return len(self.sub_ids)
 
     def __getitem__(self, idx: int) -> dict:
-        data  = self._load_obs(idx)
-        tod   = data["tod"]                          # [ndet, nsamp]  float32
-        fp    = data["focal_plane"]                  # [ndet, 2]      float32
-        srate = float(data["srate"])
-        ndet, nsamp = tod.shape
+        while True:
+            try:
+                data  = self._load_obs(idx)
+                tod   = data["tod"]                          # [ndet, nsamp]  float32
+                fp    = data["focal_plane"]                  # [ndet, 2]      float32
+                srate = float(data["srate"])
+                ndet, nsamp = tod.shape
+
+                # Failsafe: check cached data just in case bad data slipped through
+                if tod.shape[0] < 50:
+                    raise ValueError("Cached TOD has < 50 detectors")
+                if np.isnan(tod).any():
+                    raise ValueError("NaNs found in cached TOD")
+
+                # Sucess, we break the while loop
+                break
+            except Exception as e:
+                log.warning(f"Skipping index {idx} ({self.sub_ids[idx]}) due to error: {e}")
+                # Pick a brand new random index and try again
+                idx = np.random.randint(0, len(self.sub_ids))
 
         # --- Random crop (time-axis data augmentation) --------------------
         if self.chunk_size is not None:
@@ -413,6 +422,14 @@ class LATDataset(Dataset):
         # --- Focal plane normalisation ------------------------------------
         if self.normalize_focal_plane:
             fp = self._normalize_fp(fp)
+
+        # --apply the final deslope and the window to the chunk
+        putils.deslope(chunk, w=5, inplace=True)
+        # Apply window → FFT → unapply window (matches mapmaker convention)
+        nwin = putils.nint(self.window * chunk)
+        mapmaking.apply_window(chunk, nwin)
+        fft.rfft(chunk)                                # side-effect on tod buffer
+        mapmaking.apply_window(chunk, nwin, -1)
 
         return {
             "tod":         torch.from_numpy(chunk),        # [ndet, chunk_size]
