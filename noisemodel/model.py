@@ -67,6 +67,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional
+from scipy.fft import next_fast_len
 from .utils import *
 
 # ---------------------------------------------------------------------------
@@ -488,14 +489,17 @@ class CMBNoiseAutoencoder(nn.Module):
         # Use median srate for building common freq grid across the batch.
         # Individual srates in SO are very close (~200 Hz) so this is fine.
         srate_val = srate.median().item()
-        freqs = torch.fft.rfftfreq(nsamp, d=1.0 / srate_val).to(tod.device)
+        # optimized length
+        fast_nsamp = next_fast_len(nsamp)
+
+        freqs = torch.fft.rfftfreq(fast_nsamp, d=1.0 / srate_val).to(tod.device)
         edges = make_freq_bins(
-            srate_val, nsamp, self.nbin, self.fmin,
+            srate_val, fast_nsamp, self.nbin, self.fmin,
             self.fmax if self.fmax is not None else srate_val / 2.0
         ).to(tod.device)
  
         # FFT along the time axis
-        ftod = torch.fft.rfft(tod, dim=-1)  # [B, ndet, nfreq]
+        ftod = torch.fft.rfft(tod, n=fast_nsamp, dim=-1)  # [B, ndet, nfreq]
  
         # Bin the power spectrum
         psd = bin_power_spectrum(ftod, edges, freqs, det_mask)  # [B, ndet, nbin]

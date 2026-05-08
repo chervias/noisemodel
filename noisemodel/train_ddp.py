@@ -370,8 +370,10 @@ def train(cfg: dict, only_cache: bool = False):
             with torch.autocast(device.type, enabled=cfg["amp"]):
                 out  = model(tod, focal_plane, det_mask, srate)
                 loss = model.module.loss(out, det_mask)
-                if not torch.isfinite(loss):
-                    log.warning(f"  Non-finite loss={loss.item()} at step {global_step}, skipping batch")
+                if not torch.isfinite(loss) or loss.item()>15000:
+                    log.warning(
+                        f"  Anomaly detected (loss={loss.item():.0f}) at step {global_step}. "
+                        f"Skipping batch to prevent gradient explosion.")
                     optimizer.zero_grad()
                     continue
 
