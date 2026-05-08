@@ -426,7 +426,7 @@ class LATDataset(Dataset):
         # --apply the final deslope and the window to the chunk
         putils.deslope(chunk, w=5, inplace=True)
         # Apply window → FFT → unapply window (matches mapmaker convention)
-        nwin = putils.nint(self.window * chunk)
+        nwin = putils.nint(self.window * srate)
         mapmaking.apply_window(chunk, nwin)
         fft.rfft(chunk)                                # side-effect on tod buffer
         mapmaking.apply_window(chunk, nwin, -1)
