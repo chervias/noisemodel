@@ -207,11 +207,35 @@ class LATDataset(Dataset):
         self.sub_ids = mapmaking.filter_subids(self.sub_ids, bands=self.band)
         log.info(f"LATDataset: {len(self.sub_ids)} observations after filtering")
 
-        # Focal plane normalisation stats (cheap — uses metadata only)
+        # --- Focal plane normalisation stats (Cached) ---
         self._fp_offset = None
         self._fp_scale  = None
         if self.normalize_focal_plane:
-            self._compute_focal_plane_stats()
+            import hashlib
+            import json
+            # Create a unique hash for this exact set of observations
+            id_str = "".join(sorted(self.sub_ids)).encode('utf-8')
+            dset_hash = hashlib.md5(id_str).hexdigest()[:12]
+            # Ensure cache directory exists using the existing Path object
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
+            stats_file = self.cache_dir / f"fp_stats_{dset_hash}.json"
+            if stats_file.exists():
+                log.info(f"Loading cached focal plane stats from {stats_file.name}...")
+                with open(stats_file, 'r') as f:
+                    stats = json.load(f)
+                    self._fp_offset = np.array(stats["offset"], dtype=np.float32)
+                    self._fp_scale  = np.array(stats["scale"], dtype=np.float32)
+            else:
+                log.info("Computing focal plane stats (this will be cached for future runs)...")
+                self._compute_focal_plane_stats()
+                
+                # Save the results to disk so we never have to compute this again
+                with open(stats_file, 'w') as f:
+                    json.dump({
+                        "offset": self._fp_offset.tolist(),
+                        "scale":  self._fp_scale.tolist()
+                    }, f)
+        # ------------------------------------------------
 
         # Populate the disk cache for any observations not yet cached
         self._populate_disk_cache()
