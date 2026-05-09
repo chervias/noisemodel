@@ -623,10 +623,7 @@ def make_default_config() -> dict:
         "preload":         False,
 
         # --- Model ---
-        "nbin":     55,
         "nmode":    20,
-        "fmin":     0.16,
-        "fmax":     None,
         "d_model":  128,
         "d_latent": 64,
         "d_hidden": 256,
