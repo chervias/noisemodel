@@ -430,29 +430,46 @@ class CMBNoiseAutoencoder(nn.Module):
         Number of transformer encoder layers.
     dropout : float
         Dropout probability.
+    normalize_tod : bool
     """
  
     def __init__(
         self,
-        nbin: int = 48,
         nmode: int = 20,
-        fmin: float = 0.16,
+        nbin: Optional[int] = None,
+        fmin: Optional[float] = None,
         fmax: Optional[float] = None,
+        bin_edges: Optional[list] = None,  # <-- Add this
         d_model: int = 128,
         d_latent: int = 64,
         d_hidden: int = 256,
         n_heads: int = 4,
         n_layers: int = 3,
         dropout: float = 0.1,
+        normalize_tod: bool = True,
+        window: float = 2.0,
     ):
         super().__init__()
-        self.nbin   = nbin
+        if bin_edges is not None:
+            # Register as a buffer so it saves to the checkpoint and moves to the GPU automatically
+            self.register_buffer("bin_edges", torch.tensor(bin_edges, dtype=torch.float32))
+            self.nbin = len(bin_edges) - 1
+            self.fmin = bin_edges[0]
+            self.fmax = bin_edges[-1]
+        else:
+            self.bin_edges = None
+            self.nbin = nbin
+            self.fmin = fmin
+            self.fmax = fmax
+            if self.nbin is None:
+                raise ValueError("Must provide either bin_edges or nbin/fmin/fmax")
+
         self.nmode  = nmode
-        self.fmin   = fmin
-        self.fmax   = fmax
- 
+        self.normalize_tod = normalize_tod
+        self.window = window
+
         self.encoder = DetectorTransformerEncoder(
-            nbin=nbin,
+            nbin=self.nbin,
             d_model=d_model,
             d_latent=d_latent,
             n_heads=n_heads,
@@ -460,7 +477,7 @@ class CMBNoiseAutoencoder(nn.Module):
             dropout=dropout,
         )
         self.decoder = NoiseDecoder(
-            nbin=nbin,
+            nbin=self.nbin,
             nmode=nmode,
             d_model=d_model,
             d_latent=d_latent,
@@ -485,28 +502,29 @@ class CMBNoiseAutoencoder(nn.Module):
         edges   : [nbin+1]          float   — bin edges (Hz)
         """
         B, ndet, nsamp = tod.shape
- 
-        # Use median srate for building common freq grid across the batch.
-        # Individual srates in SO are very close (~200 Hz) so this is fine.
         srate_val = srate.median().item()
+
         # optimized length
         fast_nsamp = next_fast_len(nsamp)
 
         freqs = torch.fft.rfftfreq(fast_nsamp, d=1.0 / srate_val).to(tod.device)
-        edges = make_freq_bins(
-            srate_val, fast_nsamp, self.nbin, self.fmin,
-            self.fmax if self.fmax is not None else srate_val / 2.0
-        ).to(tod.device)
- 
+        # --- Use custom edges if provided, else fallback to log-spaced ---
+        if self.bin_edges is not None:
+            edges = self.bin_edges
+        else:
+            edges = make_freq_bins(
+                srate_val, fast_nsamp, self.nbin, self.fmin,
+                self.fmax if self.fmax is not None else srate_val / 2.0
+            ).to(tod.device)
         # FFT along the time axis
         ftod = torch.fft.rfft(tod, n=fast_nsamp, dim=-1)  # [B, ndet, nfreq]
- 
+
         # Bin the power spectrum
         psd = bin_power_spectrum(ftod, edges, freqs, det_mask)  # [B, ndet, nbin]
- 
+
         # Log-scale PSD (better dynamic range for the network)
         log_psd = (psd + 1e-30).log()
- 
+
         return ftod, log_psd, freqs, edges
  
     def forward(
