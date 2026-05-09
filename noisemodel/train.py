@@ -127,16 +127,17 @@ def train(cfg: dict, only_cache: bool = False):
 
     # ---- Model ----------------------------------------------------------------
     model = CMBNoiseAutoencoder(
-        nbin     = cfg["nbin"],
-        nmode    = cfg["nmode"],
-        fmin     = cfg["fmin"],
-        fmax     = cfg["fmax"],
-        d_model  = cfg["d_model"],
-        d_latent = cfg["d_latent"],
-        d_hidden = cfg["d_hidden"],
-        n_heads  = cfg["n_heads"],
-        n_layers = cfg["n_layers"],
-        dropout  = cfg["dropout"],
+        nmode     = cfg["nmode"],
+        bin_edges = cfg.get("bin_edges", None),  # <-- Pass custom array
+        nbin      = cfg.get("nbin", None),       # <-- Fallbacks
+        fmin      = cfg.get("fmin", None),
+        fmax      = cfg.get("fmax", None),
+        d_model   = cfg["d_model"],
+        d_latent  = cfg["d_latent"],
+        d_hidden  = cfg["d_hidden"],
+        n_heads   = cfg["n_heads"],
+        n_layers  = cfg["n_layers"],
+        dropout   = cfg["dropout"],
     ).to(device)
 
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)

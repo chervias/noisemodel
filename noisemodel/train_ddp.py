@@ -257,16 +257,19 @@ def train(cfg: dict, only_cache: bool = False):
 
     # ---- Model ---------------------------------------------------------------
     base_model = CMBNoiseAutoencoder(
-        nbin     = cfg["nbin"],
-        nmode    = cfg["nmode"],
-        fmin     = cfg["fmin"],
-        fmax     = cfg["fmax"],
+        nmode     = cfg["nmode"],
+        bin_edges = cfg.get("bin_edges", None),  # <-- Pass custom array
+        nbin      = cfg.get("nbin", None),       # <-- Fallbacks
+        fmin      = cfg.get("fmin", None),
+        fmax      = cfg.get("fmax", None),
         d_model  = cfg["d_model"],
         d_latent = cfg["d_latent"],
         d_hidden = cfg["d_hidden"],
         n_heads  = cfg["n_heads"],
         n_layers = cfg["n_layers"],
         dropout  = cfg["dropout"],
+        normalize_tod = cfg.get("normalize_tod", True),
+        window = cfg.get("window", 2.0),
     ).to(device)
 
     model = DDP(base_model, device_ids=[local_rank])
