@@ -439,7 +439,7 @@ class CMBNoiseAutoencoder(nn.Module):
         nbin: Optional[int] = None,
         fmin: Optional[float] = None,
         fmax: Optional[float] = None,
-        bin_edges: Optional[list] = None,  # <-- Add this
+        bin_edges: Optional[list] = None,
         d_model: int = 128,
         d_latent: int = 64,
         d_hidden: int = 256,
