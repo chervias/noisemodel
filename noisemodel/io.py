@@ -437,23 +437,11 @@ class LATDataset(Dataset):
         else:
             chunk = tod
 
-        # --- Per-detector variance normalisation --------------------------
-        if self.normalize_tod:
-            std   = chunk.std(axis=1, keepdims=True)   # [ndet, 1]
-            std   = np.where(std == 0, 1.0, std)
-            chunk = chunk / std
-
         # --- Focal plane normalisation ------------------------------------
         if self.normalize_focal_plane:
             fp = self._normalize_fp(fp)
-
-        # --apply the final deslope and the window to the chunk
-        putils.deslope(chunk, w=5, inplace=True)
-        # Apply window → FFT → unapply window (matches mapmaker convention)
-        nwin = putils.nint(self.window * srate)
-        mapmaking.apply_window(chunk, nwin)
-        fft.rfft(chunk)                                # side-effect on tod buffer
-        mapmaking.apply_window(chunk, nwin, -1)
+        # the tod normalization, final deslope and windowing used to happen here
+        # we moved them to the model so they can be done efficiently on gpu
 
         return {
             "tod":         torch.from_numpy(chunk),        # [ndet, chunk_size]

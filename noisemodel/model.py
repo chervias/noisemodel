@@ -507,6 +507,16 @@ class CMBNoiseAutoencoder(nn.Module):
         # optimized length
         fast_nsamp = next_fast_len(nsamp)
 
+        # do the normalization, final deslope and windowing in the gpu
+        if self.normalize_tod:
+            # Calculate standard deviation on GPU
+            tod_std = tod.std(dim=-1, keepdim=True)
+            tod_std = tod_std.clamp(min=1e-6)  # Prevent division by zero
+            tod = tod / tod_std
+
+        tod = torch_deslope(tod, w=5)
+        tod = torch_apply_window(tod, window=self.window, srate=srate_val)
+
         freqs = torch.fft.rfftfreq(fast_nsamp, d=1.0 / srate_val).to(tod.device)
         # --- Use custom edges if provided, else fallback to log-spaced ---
         if self.bin_edges is not None:
