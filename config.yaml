@@ -1,30 +1,29 @@
+list_of_obs_test: list_i1_test.txt
 list_of_obs_train: list_i1_train.txt
 list_of_obs_val: list_i1_valid.txt
 context: use_this_local.yaml
 preprocess: lat_cfg_mf.yaml
 band: f090
 downsample: 8
-chunk_size: 30_000 # notice these depend on the downsampling factor
+chunk_size: 45_000 # notice these depend on the downsampling factor
 preload: false
 normalize_tod: true
 normalize_focal_plane: true
 num_workers: 4 # this is per mpi task
 num_cache_workers: 32
-prefetch_factor: 2
-nbin: 40
-nmode: 12
-fmin: 0.16
-fmax: null
-d_model: 128
+prefetch_factor: 4
+nmode: 15
+bin_edges: [0.002, 0.16, 0.25, 0.35, 0.45, 0.55, 0.70, 0.85, 1.00, 1.20, 1.40, 1.70, 2.00, 2.40, 2.80, 3.40, 3.80, 4.60, 5.00, 5.50, 6.00, 6.50, 7.00, 8.00, 9.00, 10.0, 11.0, 12.0]
+d_model: 256
 d_latent: 64
 d_hidden: 256
 n_heads: 4
-n_layers: 3
+n_layers: 4
 dropout: 0.1
 lr: 1.0e-4
 lr_min: 1.0e-6
 weight_decay: 1.0e-05
-grad_clip: 0.5
+grad_clip: 0.1
 schedule: cosine
 warmup_epochs: 1
 batch_size: 12
@@ -33,9 +32,9 @@ val_max_batches: 40
 full_val_every_n_epochs: 10
 val_every_n_steps: 200
 log_every_n_steps: 20
-output_dir: output/test_gpu_114-obs-train
+output_dir: output/test_gpu_114-obs-train_newbins_2
 checkpoint_every_n_epochs: 5
 keep_last_n_checkpoints: 3
-seed: 66
+seed: 666
 amp: true
 pin_memory: true
