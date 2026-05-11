@@ -74,13 +74,14 @@ def evaluate_test_set(cfg_path, only_cache=False, num_cache_workers=None):
     ckpt_path = Path(cfg["output_dir"]) / "checkpoints" / "best.pt"
     log.info(f"Loading weights from {ckpt_path}")
     ckpt = torch.load(ckpt_path, map_location=device, weights_only=True)    
-    # Strip the "module." prefix added by DDP during training
+    # Strip prefixes added by torch.compile() or DDP
     state_dict = ckpt["model_state"]
     clean_state_dict = {}
     for k, v in state_dict.items():
-        # Remove "module." if it exists
-        clean_key = k[7:] if k.startswith("module.") else k
+        clean_key = k.replace("_orig_mod.", "").replace("module.", "")
         clean_state_dict[clean_key] = v
+    model.load_state_dict(clean_state_dict)
+    model.eval()
     
     log.info(f"Evaluating {len(test_loader.dataset)} test observations...")
     
