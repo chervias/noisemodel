@@ -271,6 +271,7 @@ def train(cfg: dict, only_cache: bool = False):
         normalize_tod = cfg.get("normalize_tod", True),
         window = cfg.get("window", 2.0),
     ).to(device)
+    base_model = torch.compile(base_model)
 
     model = DDP(base_model, device_ids=[local_rank])
 
@@ -337,9 +338,6 @@ def train(cfg: dict, only_cache: bool = False):
         start_epoch   = ckpt["epoch"] + 1
         global_step   = ckpt["global_step"]
         best_val_loss = ckpt["best_val_loss"]
-        # Reset LR to current effective_lr in case config changed since checkpoint
-        for pg in optimizer.param_groups:
-            pg["lr"] = effective_lr
         if is_main(rank):
             log.info(f"  Resumed at epoch {start_epoch}, step {global_step}, "
                      f"best_val_loss={best_val_loss:.4f}")
@@ -370,8 +368,12 @@ def train(cfg: dict, only_cache: bool = False):
             det_mask    = batch["det_mask"].to(device, non_blocking=True)
             srate       = batch["srate"].to(device, non_blocking=True)
 
+            srate_val = srate.median().item()
+            from scipy.fft import next_fast_len
+            fast_nsamp = next_fast_len(tod.shape[-1])
+
             with torch.autocast(device.type, enabled=cfg["amp"]):
-                out  = model(tod, focal_plane, det_mask, srate)
+                out  = model(tod, focal_plane, det_mask, srate_val, fast_nsamp)
                 loss = model.module.loss(out, det_mask)
                 if not torch.isfinite(loss):
                     log.warning(f"  Non-finite loss={loss.item()} at step {global_step}, skipping batch")

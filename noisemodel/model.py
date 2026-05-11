@@ -286,6 +286,7 @@ def woodbury_nll_loss(
     D: torch.Tensor,       # [B, nbin, ndet]  positive
     vecs: torch.Tensor,    # [B, ndet, nmode]
     E: torch.Tensor,       # [B, nbin, nmode]  positive
+    psd: torch.Tensor,     # [[B, ndet, nbin] 
     det_mask: torch.Tensor,# [B, ndet]  True = real
     eps: float = 1e-6,
 ) -> torch.Tensor:
@@ -310,6 +311,8 @@ def woodbury_nll_loss(
 
     Chat_b is never formed explicitly; only its diagonal and
     projections onto V_b are needed.
+
+    We pass psd which comes from _get_spectral_features
 
     Returns
     -------
@@ -368,7 +371,7 @@ def woodbury_nll_loss(
         # ------ trace term ------
         # tr(diag(1/D) Chat) = sum_d (1/D_b[d]) * (1/n_f) * sum_f |ft_b[d,f]|^2
         #                    = sum_d (1/D_b[d]) * psd_b[d]
-        psd_b = ft_b.abs().pow(2).mean(dim=-1)    # [B, ndet]  mean power in bin
+        psd_b = psd[:, :, b]  # [B, ndet] mean power in bin
         trace_iD_C = (iD_b * psd_b * det_mask.float()).sum(dim=-1)  # [B]
 
         # W = (diag(1/D) V)^T @ ftod_b  [B, nmode, n_f]  (complex)
@@ -488,8 +491,9 @@ class CMBNoiseAutoencoder(nn.Module):
         self,
         tod: torch.Tensor,       # [B, ndet, nsamp]  (may be padded)
         det_mask: torch.Tensor,  # [B, ndet]
-        srate: torch.Tensor,     # [B]
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        srate_val: float,     # [B]
+        fast_nsamp: int, 
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         FFT the TOD and compute log-PSD features.
  
@@ -500,12 +504,9 @@ class CMBNoiseAutoencoder(nn.Module):
         freqs   : [nfreq]           float   — frequency axis (Hz), built from
                                               median srate across the batch
         edges   : [nbin+1]          float   — bin edges (Hz)
+        psd     : [B, ndet, nbin]   float   - power per bin per detector
         """
         B, ndet, nsamp = tod.shape
-        srate_val = srate.median().item()
-
-        # optimized length
-        fast_nsamp = next_fast_len(nsamp)
 
         # do the normalization, final deslope and windowing in the gpu
         if self.normalize_tod:
@@ -535,14 +536,15 @@ class CMBNoiseAutoencoder(nn.Module):
         # Log-scale PSD (better dynamic range for the network)
         log_psd = (psd + 1e-30).log()
 
-        return ftod, log_psd, freqs, edges
+        return ftod, log_psd, freqs, edges, psd
  
     def forward(
         self,
         tod: torch.Tensor,           # [B, max_ndet, max_nsamp]
         focal_plane: torch.Tensor,   # [B, max_ndet, 2]
         det_mask: torch.Tensor,      # [B, max_ndet]  bool
-        srate: torch.Tensor,         # [B]
+        srate_val: float,                # [B]
+        fast_nsamp: int,
     ) -> dict:
         """
         Forward pass.
@@ -558,9 +560,8 @@ class CMBNoiseAutoencoder(nn.Module):
           edges : [nbin+1]           — bin edges (Hz)
         """
         # 1. Spectral feature extraction
-        ftod, log_psd, freqs, edges = self._get_spectral_features(
-            tod, det_mask, srate
-        )
+        ftod, log_psd, freqs, edges, psd = self._get_spectral_features(
+            tod, det_mask, srate_val, fast_nsamp)
  
         # 2. Encode: detector-axis transformer → z, h
         z, h = self.encoder(log_psd, focal_plane, det_mask)
@@ -581,13 +582,9 @@ class CMBNoiseAutoencoder(nn.Module):
             "ftod":   ftod,    # [B, ndet, nfreq]  complex
             "freqs":  freqs,   # [nfreq]
             "edges":  edges,   # [nbin+1]
+            "psd": psd
         }
- 
-    def loss(
-        self,
-        out: dict,
-        det_mask: torch.Tensor,
-    ) -> torch.Tensor:
+    def loss(self, out: dict, det_mask: torch.Tensor) -> torch.Tensor:
         """
         Compute the self-supervised Gaussian NLL loss from a forward() output.
  
@@ -600,15 +597,18 @@ class CMBNoiseAutoencoder(nn.Module):
         -------
         loss : scalar tensor
         """
-        return woodbury_nll_loss(
-            ftod     = out["ftod"],
-            freqs    = out["freqs"],
-            edges    = out["edges"],
-            D        = out["D"],
-            vecs     = out["vecs"],
-            E        = out["E"],
-            det_mask = det_mask,
-        )
+        # Disable autocast for the linalg operations to prevent Cholesky failure
+        with torch.autocast(device_type=out["D"].device.type, enabled=False):
+            return woodbury_nll_loss(
+                ftod     = out["ftod"].to(torch.complex64),
+                freqs    = out["freqs"].float(),
+                edges    = out["edges"].float(),
+                D        = out["D"].float(),
+                vecs     = out["vecs"].float(),
+                E        = out["E"].float(),
+                psd      = out["psd"].float(),
+                det_mask = det_mask,
+            )
 
 # ---------------------------------------------------------------------------
 # Training step (call from your training loop)
@@ -639,7 +639,12 @@ def training_step(
     det_mask    = batch["det_mask"].to(device, non_blocking=True)
     srate       = batch["srate"].to(device, non_blocking=True)
 
+    srate_val = srate.median().item()
+    fast_nsamp = next_fast_len(tod.shape[-1])
+
     with torch.autocast(device.type, enabled=amp and device.type == "cuda"):
-        out  = model(tod, focal_plane, det_mask, srate)
+        # 2. Pass the extracted Python floats/ints into the model
+        out  = model(tod, focal_plane, det_mask, srate_val, fast_nsamp)
         loss = model.loss(out, det_mask)
+        
     return loss

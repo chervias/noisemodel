@@ -53,37 +53,29 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 def _cache_path(cache_dir: Path, sub_id: str) -> Path:
-    """
-    Return the .npz path for a given sub_id.
-
-    We use a short hash of the sub_id string as the filename so that
-    arbitrary sub_id formats (with slashes, colons, etc.) map safely to
-    filesystem paths.
-    """
     safe = hashlib.md5(str(sub_id).encode()).hexdigest()
-    return cache_dir / f"{safe}.npz"
-
+    return cache_dir / f"{safe}.pt"
 
 def _load_from_cache(path: Path) -> dict:
-    data = np.load(path, allow_pickle=False)
-    return {k: data[k] for k in data.files}
-
+    # Use weights_only=True for security and slightly faster loading
+    return torch.load(path, weights_only=True)
 
 def _save_to_cache(path: Path, tod: np.ndarray, focal_plane: np.ndarray,
                    srate: float):
     path.parent.mkdir(parents=True, exist_ok=True)
-    # np.savez always appends .npz to whatever stem you give it, so we pass a
-    # stem without any extension and let numpy produce the final .npz file.
-    # For the atomic write we use a .tmp stem so numpy writes hash.tmp.npz,
-    # which we then rename to hash.npz.  This way a partial write (e.g. killed
-    # job) never leaves a file that looks like a valid cache entry.
-    tmp_stem = path.with_name(path.stem + ".tmp")        # cache/hash.tmp  (no ext)
-    tmp_npz  = tmp_stem.parent / (tmp_stem.name + ".npz") # cache/hash.tmp.npz
-    np.savez(tmp_stem,                                    # numpy writes hash.tmp.npz
-             tod=tod.astype(np.float32),
-             focal_plane=focal_plane.astype(np.float32),
-             srate=np.float32(srate))
-    tmp_npz.rename(path)                                  # hash.tmp.npz → hash.npz
+    # We use a .tmp.pt extension for the atomic write
+    tmp_path = path.with_name(path.stem + ".tmp.pt")
+    # Convert arrays directly to PyTorch tensors before saving. 
+    # This completely eliminates the numpy -> torch conversion during dataloading.
+    data_to_save = {
+        "tod": torch.from_numpy(tod.astype(np.float32)),
+        "focal_plane": torch.from_numpy(focal_plane.astype(np.float32)),
+        "srate": torch.tensor(srate, dtype=torch.float32)
+    }
+    # Save the dictionary using torch.save
+    torch.save(data_to_save, tmp_path)
+    # Rename atomically to the final path
+    tmp_path.rename(path)
 
 def _preprocess_and_cache_one(sub_id, cache_dir, context_path, preproc_path, window, downsample=None):
     """Module-level so it can be pickled by ProcessPoolExecutor."""
@@ -407,7 +399,7 @@ class LATDataset(Dataset):
                 data  = self._load_obs(idx)
                 tod   = data["tod"]                          # [ndet, nsamp]  float32
                 fp    = data["focal_plane"]                  # [ndet, 2]      float32
-                srate = float(data["srate"])
+                srate = data["srate"]
                 ndet, nsamp = tod.shape
 
                 # Failsafe: check cached data just in case bad data slipped through
@@ -444,9 +436,9 @@ class LATDataset(Dataset):
         # we moved them to the model so they can be done efficiently on gpu
 
         return {
-            "tod":         torch.from_numpy(chunk),        # [ndet, chunk_size]
-            "focal_plane": torch.from_numpy(fp.copy()),    # [ndet, 2]
-            "srate":       torch.tensor(srate),
+            "tod":         chunk,
+            "focal_plane": fp.clone(),
+            "srate":       srate,
             "ndet":        ndet,
             "nsamp":       chunk.shape[1],
             "obs_id":      str(self.sub_ids[idx]),

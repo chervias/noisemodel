@@ -139,6 +139,7 @@ def train(cfg: dict, only_cache: bool = False):
         n_layers  = cfg["n_layers"],
         dropout   = cfg["dropout"],
     ).to(device)
+    model = torch.compile(model)
 
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     log.info(f"Model parameters: {n_params:,}")
@@ -197,9 +198,6 @@ def train(cfg: dict, only_cache: bool = False):
         start_epoch   = ckpt["epoch"] + 1
         global_step   = ckpt["global_step"]
         best_val_loss = ckpt["best_val_loss"]
-        # Reset LR to current effective_lr in case config changed since checkpoint
-        for pg in optimizer.param_groups:
-            pg["lr"] = effective_lr
         log.info(f"  Resumed at epoch {start_epoch}, step {global_step}, "
                  f"best_val_loss={best_val_loss:.4f}")
 
