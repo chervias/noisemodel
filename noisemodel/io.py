@@ -43,6 +43,7 @@ from torch.utils.data import Dataset, DataLoader
 from sotodlib import core, mapmaking
 from sotodlib.preprocess import preprocess_util as pp_util
 from sotodlib.site_pipeline.utils.config import _get_config
+from sotodlib.site_pipeline.utils import depth1_utils as d1u
 from pixell import utils as putils, fft
 
 log = logging.getLogger(__name__)
@@ -77,7 +78,53 @@ def _save_to_cache(path: Path, tod: np.ndarray, focal_plane: np.ndarray,
     # Rename atomically to the final path
     tmp_path.rename(path)
 
-def _preprocess_and_cache_one(sub_id, cache_dir, context_path, preproc_path, window, downsample=None):
+def _preprocess_obs_general(obs, band, downsample=None):
+    # Steps that mirror the mapmaker
+
+    # Check if we have less than 50 detectors
+    if obs.signal.shape[0] < 50:
+        raise ValueError("Less than 50 detectors left")
+
+    # Check for nans in the TOD, if so we skip this sub_id
+    if np.isnan(obs.signal).any():
+        raise ValueError("NaNs detected in TOD")
+
+    zero_dets = np.sum(obs.signal, axis=1) # sum the signal across the samples
+    if np.any(zero_dets == 0.0):
+        obs.restrict('dets', obs.dets.vals[np.logical_not(zero_dets == 0.0)])
+
+    obs.restrict('dets', obs.dets.vals[obs.det_info.wafer.type == 'OPTC'])
+    mapmaking.fix_boresight_glitches(obs)
+    putils.deslope(obs.signal, w=5, inplace=True)
+    obs.signal = obs.signal.astype(np.float32)
+
+    # Convert from K to uK
+    obs.signal *= 1e6
+
+    srate = (obs.samps.count - 1) / (obs.timestamps[-1] - obs.timestamps[0])
+
+    # measure rms, and convert to µKrts for comparison with sens_limits
+    rms  = d1u.measure_rms(obs.signal, dt=1/srate)
+    good = d1u.sensitivity_cut(rms, d1u.SENS_LIMITS[band])
+    if np.logical_not(good).sum() / obs.dets.count > 0.5:
+        raise ValueError("More than 50 percent of detectors cut by sensitivity")
+    else:
+        obs.restrict("dets", good)
+    # Disqualify overly cut detectors
+    good_dets = mapmaking.find_usable_detectors(obs, 0.3)
+    obs.restrict("dets", good_dets)
+    if obs.dets.count==0:
+        raise ValueError("All detectors cut")
+
+    putils.deslope(obs.signal, w=5, inplace=True)
+
+    # here we downsample
+    if downsample is not None:
+        obs = mapmaking.downsample_obs(obs, downsample)
+
+    return obs
+
+def _preprocess_and_cache_one(sub_id, cache_dir, context_path, preproc_path, window, downsample=None, band='f090'):
     """Module-level so it can be pickled by ProcessPoolExecutor."""
     context = core.Context(context_path)
     preproc = _get_config(preproc_path)
@@ -85,25 +132,9 @@ def _preprocess_and_cache_one(sub_id, cache_dir, context_path, preproc_path, win
     meta = context.get_meta(sub_id)
     obs, _ = pp_util.load_and_preprocess(sub_id, preproc, context=context, meta=meta)
 
-    # Steps that mirror the mapmaker
-    obs.restrict('dets', obs.dets.vals[obs.det_info.wafer.type == 'OPTC'])
-    mapmaking.fix_boresight_glitches(obs)
-    putils.deslope(obs.signal, w=5, inplace=True)
-    obs.signal = obs.signal.astype(np.float32)
-    putils.deslope(obs.signal, w=5, inplace=True)
-    # here we downsample
-    if downsample is not None:
-        obs = mapmaking.downsample_obs(obs, downsample)
+    obs = _preprocess_obs_general(obs, band, downsample)
     srate = (obs.samps.count - 1) / (obs.timestamps[-1] - obs.timestamps[0])
     tod = obs.signal.astype(np.float32)          # [ndet, nsamp]
-
-    # Check if we have less than 50 detectors
-    if tod.shape[0] < 50:
-        raise ValueError("Less than 50 detectors left")
-
-    # Check for nans in the TOD, if so we skip this sub_id
-    if np.isnan(tod).any():
-        raise ValueError("NaNs detected in TOD")
 
     fp = np.array(
         [obs.focal_plane.xi, obs.focal_plane.eta],
@@ -285,25 +316,9 @@ class LATDataset(Dataset):
             sub_id, self.preproc, context=self.context, meta=meta
         )
 
-        # Steps that mirror the mapmaker
-        obs.restrict('dets', obs.dets.vals[obs.det_info.wafer.type == 'OPTC'])
-        mapmaking.fix_boresight_glitches(obs)
-        putils.deslope(obs.signal, w=5, inplace=True)
-        obs.signal = obs.signal.astype(np.float32)
-        putils.deslope(obs.signal, w=5, inplace=True)
-        # here we downsample
-        if self.downsample is not None:
-            obs = mapmaking.downsample_obs(obs, self.downsample)
+        obs = _preprocess_obs_general(obs, self.band, self.downsample)
         srate = (obs.samps.count - 1) / (obs.timestamps[-1] - obs.timestamps[0])
         tod = obs.signal.astype(np.float32)          # [ndet, nsamp]
-
-        # Check if we have less than 50 detectors
-        if tod.shape[0] < 50:
-            raise ValueError("Less than 50 detectors left")
-
-        # Check for nans in the TOD, if so we skip this sub_id
-        if np.isnan(tod).any():
-            raise ValueError("NaNs detected in TOD")
 
         fp = np.array(
             [obs.focal_plane.xi, obs.focal_plane.eta],
@@ -333,7 +348,7 @@ class LATDataset(Dataset):
                 pool.submit(_preprocess_and_cache_one,
                             sub_id, self.cache_dir,
                             self.context_path, self.preproc_path,
-                            self.window, downsample=self.downsample): sub_id
+                            self.window, downsample=self.downsample, band=self.band): sub_id
                 for sub_id in missing
             }
             for i, future in enumerate(as_completed(futures)):
