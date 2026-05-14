@@ -493,7 +493,7 @@ class CMBNoiseAutoencoder(nn.Module):
         det_mask: torch.Tensor,  # [B, ndet]
         srate_val: float,     # [B]
         fast_nsamp: int, 
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         FFT the TOD and compute log-PSD features.
  
@@ -505,20 +505,36 @@ class CMBNoiseAutoencoder(nn.Module):
                                               median srate across the batch
         edges   : [nbin+1]          float   — bin edges (Hz)
         psd     : [B, ndet, nbin]   float   - power per bin per detector
+        tod_std : [B, ndet]
         """
         B, ndet, nsamp = tod.shape
-
-        # do the normalization, final deslope and windowing in the gpu
-        if self.normalize_tod:
-            # Calculate standard deviation on GPU
-            tod_std = tod.std(dim=-1, keepdim=True)
-            tod_std = tod_std.clamp(min=1e-6)  # Prevent division by zero
-            tod = tod / tod_std
 
         tod = torch_deslope(tod, w=5)
         tod = torch_apply_window(tod, window=self.window, srate=srate_val)
 
+        # FFT along the time axis
         freqs = torch.fft.rfftfreq(fast_nsamp, d=1.0 / srate_val).to(tod.device)
+        ftod = torch.fft.rfft(tod, n=fast_nsamp, dim=-1)  # [B, ndet, nfreq]
+
+        # do the normalization, final deslope and windowing in the gpu
+        if self.normalize_tod:
+            # Define the white noise band (4 Hz to 10 Hz)
+            wn_mask = (freqs >= 4.0) & (freqs <= 10.0)
+            if not wn_mask.any():
+                # Safe fallback if sample rate is weirdly low
+                tod_std = tod.std(dim=-1, keepdim=True)
+            else:
+                # Mean raw power in the white noise band: [B, ndet, 1]
+                wn_power = ftod[:, :, wn_mask].abs().pow(2).mean(dim=-1, keepdim=True)
+                # Transform raw power back to equivalent time-domain standard deviation
+                tod_std = torch.sqrt(wn_power / fast_nsamp)
+            tod_std = tod_std.clamp(min=1e-6)  # Prevent division by zero
+            # Scale both the time-domain and frequency-domain data
+            tod = tod / tod_std
+            ftod = ftod / tod_std
+        else:
+            tod_std = torch.ones((B, ndet, 1), device=tod.device, dtype=tod.dtype)
+
         # --- Use custom edges if provided, else fallback to log-spaced ---
         if self.bin_edges is not None:
             edges = self.bin_edges
@@ -527,8 +543,6 @@ class CMBNoiseAutoencoder(nn.Module):
                 srate_val, fast_nsamp, self.nbin, self.fmin,
                 self.fmax if self.fmax is not None else srate_val / 2.0
             ).to(tod.device)
-        # FFT along the time axis
-        ftod = torch.fft.rfft(tod, n=fast_nsamp, dim=-1)  # [B, ndet, nfreq]
 
         # Bin the power spectrum
         psd = bin_power_spectrum(ftod, edges, freqs, det_mask)  # [B, ndet, nbin]
@@ -536,7 +550,7 @@ class CMBNoiseAutoencoder(nn.Module):
         # Log-scale PSD (better dynamic range for the network)
         log_psd = (psd + 1e-30).log()
 
-        return ftod, log_psd, freqs, edges, psd
+        return ftod, log_psd, freqs, edges, psd, tod_std
  
     def forward(
         self,
@@ -560,7 +574,7 @@ class CMBNoiseAutoencoder(nn.Module):
           edges : [nbin+1]           — bin edges (Hz)
         """
         # 1. Spectral feature extraction
-        ftod, log_psd, freqs, edges, psd = self._get_spectral_features(
+        ftod, log_psd, freqs, edges, psd, tod_std = self._get_spectral_features(
             tod, det_mask, srate_val, fast_nsamp)
  
         # 2. Encode: detector-axis transformer → z, h
@@ -582,7 +596,8 @@ class CMBNoiseAutoencoder(nn.Module):
             "ftod":   ftod,    # [B, ndet, nfreq]  complex
             "freqs":  freqs,   # [nfreq]
             "edges":  edges,   # [nbin+1]
-            "psd": psd
+            "psd": psd,
+            "tod_std": tod_std,
         }
     def loss(self, out: dict, det_mask: torch.Tensor) -> torch.Tensor:
         """
